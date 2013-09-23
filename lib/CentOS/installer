@@ -1,0 +1,159 @@
+#!/bin/bash
+# vim:et:ft=sh:sts=2:sw=2
+
+
+PHP_SAPIS="apache2 cli"
+
+APACHE_USER="apache"
+
+os_install() {
+  yum install -y $*
+}
+
+### Install needed rpm providers
+prepare_system() {
+  echo
+  echo "========================================"
+  echo "    Adding and Enabling Epel and Remi   "
+  echo "========================================"
+  echo
+  if [ ! -f /etc/yum.repos.d/epel.repo ]; then
+    yum install -y http://download.fedoraproject.org/pub/epel/6/i386/epel-release-6-8.noarch.rpm || true
+  fi
+  if [ ! -e /etc/yum.repos.d/remi.repo ]; then
+    yum install -y http://rpms.famillecollet.com/enterprise/remi-release-6.rpm
+  fi
+  sed -i '/^\[remi\]/,/^$/ s/enabled=0/enabled=1/' /etc/yum.repos.d/remi.repo
+
+  # Needed for rrdtool with rrdcached
+  if [ ! -f /etc/yum.repos.d/rpmforge.repo ]; then
+   yum install -y http://dag.wieers.com/redhat/el6/en/x86_64/dag/RPMS/rpmforge-release-0.5.3-1.el6.rf.x86_64.rpm
+  fi
+
+  yum install -y httpd
+  #FIXME There's a bug in handling the dateAdded value in MySQL somewhere in the scalr code, so use UTC
+  ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+}
+
+### PHP / PPA ###
+
+install_php_core () {
+  yum install -y php
+}
+
+
+### Extensions: Packages and PECL ###
+
+
+install_pecl_http () {
+  yum install -y curl curl-devel zlib zlib-devel php-pecl-http1
+}
+
+install_pecl_rrd () {
+  yum install -y php-pecl-rrd rrdtool rrdtool-devel --enablerepo=rpmforge-extras
+}
+
+install_pecl_yaml () {
+  yum install -y php-pecl-yaml
+}
+
+install_pecl_ssh () {
+  yum install -y php-pecl-ssh2
+}
+
+install_pecl_shared () {
+  yum install -y php-pear php-devel gcc
+}
+
+install_php_extension_pecls () {
+  install_pecl_shared
+  install_pecl_ssh
+  install_pecl_rrd
+  install_pecl_yaml
+  install_pecl_http
+}
+
+install_php_extension_packages () {
+  yum install -y php-mysql php-mcrypt php-snmp php-process php-dom php-soap
+}
+
+
+### PHP CONFIGURATION OPTIONS ###
+
+configure_php () {
+  echo "short_open_tag = On" > /etc/php.d/scalr.ini
+  echo "date.timezone = $(date +'%Z')" >> /etc/php.d/scalr.ini
+}
+
+pre_mysql_install() {
+  : # Do nothing
+}
+
+post_mysql_install() {
+  ROOT_MYSQL=$1
+  service mysqld start
+  chkconfig mysqld on
+  mysqladmin -u root password "$ROOT_MYSQL"
+}
+
+pre_python_setup() {
+  yum install -y python-psutil rrdtool-python --enablerepo=rpmforge-extras
+}
+
+configure_rrdcached() {
+  mkdir -p /var/lib/rrdcached/db /var/lib/rrdcached/journal
+  chown -R rrdcached.rrdcached /var/lib/rrdcached/{db,journal}
+  cat > /etc/sysconfig/rrdcached << EOF
+OPTIONS="-s $SCALR_USER"
+OPTIONS="\$OPTIONS -m 664"
+OPTIONS="\$OPTIONS -l unix:/var/run/rrdcached.sock"
+OPTIONS="\$OPTIONS -j /var/lib/rrdcached/journal/ -F"
+OPTIONS="\$OPTIONS -b /var/lib/rrdcached/db/ -B"
+RRDC_USER=root
+EOF
+  chkconfig rrdcached on
+}
+
+set_apache_vars() {
+  SCALR_SITE_PATH=/etc/httpd/conf.d/$SCALR_SITE_NAME.conf
+  SCALR_APACHE_GRANT=""
+}
+
+configure_start_apache() {
+  sed -ie 's/#LoadModule rewrite_module/LoadModule rewrite_module/' /etc/httpd/conf/httpd.conf
+
+  # Disable all Apache default sites, however they're called
+
+  # Try adding our site, whichever configuration works
+
+  service httpd restart
+  chkconfig httpd on
+  lokkit -qp 80:tcp
+  lokkit -qp 8010:tcp
+  lokkit -qp 8013:tcp
+  lokkit -qp 8014:udp
+
+}
+post_scalr_app_setup() {
+  # Setup the selinux policies
+  semanage fcontext -a -t httpd_sys_content_t  "$SCALR_APP(/.*)?"
+  semanage fcontext -a -t httpd_sys_rw_content_t  "$SCALR_CACHE(/.*)?"
+  restorecon -R $SCALR_APP/
+}
+
+pre_init_setup() {
+  cd /usr/local/src
+  pkg="dpkg_1.16.0.3ubuntu5"
+  pdir="dpkg-1.16.0.3ubuntu5"
+  wget -c "http://archive.ubuntu.com/ubuntu/pool/main/d/dpkg/$pkg.tar.bz2"
+  tar jfxvh $pkg.tar.bz2
+  rm $pkg.tar.bz2
+  cd $pdir/
+  ./configure --without-install-info --without-update-alternatives --without-dselect
+  make && make install
+}
+
+configure_system() {
+  echo "kernel.msgmnb = 524288" >> /etc/sysctl.conf
+  sysctl -e -p /etc/sysctl.conf >/dev/null 2>&1
+}

@@ -11,45 +11,53 @@ fi
 
 # Check which version this is
 wrong_version () {
-  echo "This installer is for Ubuntu 12.04 \"Precise\" and up"
+  echo "This installer is for CentOS 6.4 or Ubuntu 12.04 \"Precise\" and up"
   echo "It is not compatible with your system"
   exit 1
 }
-LSB_RELEASE=/etc/lsb-release
 
-if [ ! -f $LSB_RELEASE ]; then
-  wrong_version
+if [ -f /etc/redhat-release ]; then
+  RH_RELEASE=$(cat /etc/redhat-release)
+  DISTRIB_ID=${RH_RELEASE%% *}
+  DISTRIB_RELEASE=${RH_RELEASE#*release }
+  DISTRIB_RELEASE=${DISTRIB_RELEASE% *}
+  if [ $DISTRIB_ID != "CentOS" -a $DISTRIB_ID != "RedHat" ] || [ "$DISTRIB_RELEASE" '<' "6.4" ]; then
+    wrong_version
+  fi
+  # Import our CentOS/RedHat libraries
+  source lib/CentOS/*
+else
+  LSB_RELEASE=/etc/lsb-release
+
+  if [ ! -f $LSB_RELEASE ]; then
+    wrong_version
+  fi
+
+  source $LSB_RELEASE || wrong_version
+
+  if [ $DISTRIB_ID != "Ubuntu" ] || [ "$DISTRIB_RELEASE" '<' "12.04" ]; then
+    wrong_version
+  fi
+
+  # Check we are on a supported Kernel
+  KERNEL_UNSUPPORTED_MIN=2.6.30
+  KERNEL_UNSUPPORTED_MAX=2.6.39
+  KERNEL_VERSION=$(uname -r)
+
+  if [ ! "$KERNEL_VERSION" '<' "$KERNEL_UNSUPPORTED_MIN" ] && [ ! "$KERNEL_VERSION" '>' "$KERNEL_UNSUPPORTED_MAX" ] ; then
+    echo "Scalr does not support Linux Kernels $KERNEL_UNSUPPORTED_MIN to $KERNEL_UNSUPPORTED_MAX"
+    echo "Please consider upgrading your Kernel."
+    exit 1
+  fi
+  # Import our Ubuntu libraries
+  source lib/Ubuntu/*
 fi
 
-source $LSB_RELEASE || wrong_version
+# Import our common libraries
+source lib/trap
 
-if [ $DISTRIB_ID != "Ubuntu" ] || [ "$DISTRIB_RELEASE" '<' "12.04" ]; then
-  wrong_version
-fi
-
-# Check we are on a supported Kernel
-KERNEL_UNSUPPORTED_MIN=2.6.30
-KERNEL_UNSUPPORTED_MAX=2.6.39
-KERNEL_VERSION=`uname -r`
-
-if [ ! "$KERNEL_VERSION" '<' "$KERNEL_UNSUPPORTED_MIN" ] && [ ! "$KERNEL_VERSION" '>' "$KERNEL_UNSUPPORTED_MAX" ] ; then
-  echo "Scalr does not support Linux Kernels $KERNEL_UNSUPPORTED_MIN to $KERNEL_UNSUPPORTED_MAX"
-  echo "Please consider upgrading your Kernel."
-  exit 1
-fi
-
-
-# Import our libraries
-source lib/*
-
-echo
-echo "============================="
-echo "    Updating Repositories    "
-echo "============================="
-echo
-
-apt-get update -y
-
+# Run any pre-install commands
+prepare_system
 
 # Add latest PHP repo
 echo
@@ -85,12 +93,11 @@ echo "=========================="
 echo "    Creating Passwords    "
 echo "=========================="
 echo
-apt-get install -y pwgen
+os_install pwgen
 
 # MySQL root password
-ROOT_MYSQL=`pwgen -s 40`
-echo mysql-server-5.5 mysql-server/root_password password $ROOT_MYSQL | debconf-set-selections
-echo mysql-server-5.5 mysql-server/root_password_again password $ROOT_MYSQL | debconf-set-selections
+ROOT_MYSQL=$(pwgen -s 40)
+pre_mysql_install $ROOT_MYSQL
 
 # Securely authenticate to MySQL
 MYSQL_CLIENT_FILE=~/$$-root-mysql-client
@@ -104,11 +111,11 @@ echo "password=$ROOT_MYSQL" >> $MYSQL_CLIENT_FILE
 
 # Scalr MySQL user
 SCALR_MYSQL_USERNAME=scalr
-SCALR_MYSQL_PASSWORD=`pwgen -s 40`
+SCALR_MYSQL_PASSWORD=$(pwgen -s 40)
 SCALR_MYSQL_DB=scalr
 
 # Scalr admin user
-SCALR_ADMIN_PASSWORD=`pwgen 20`
+SCALR_ADMIN_PASSWORD=$(pwgen 20)
 
 # Install MySQL
 echo
@@ -116,7 +123,8 @@ echo "========================"
 echo "    Installing MySQL    "
 echo "========================"
 echo
-apt-get install -y mysql-server
+os_install mysql-server
+post_mysql_install $ROOT_MYSQL
 mysql --defaults-extra-file=$MYSQL_CLIENT_FILE --execute="CREATE DATABASE $SCALR_MYSQL_DB;"
 mysql --defaults-extra-file=$MYSQL_CLIENT_FILE --execute="GRANT ALL on $SCALR_MYSQL_DB.* to '$SCALR_MYSQL_USERNAME'@'localhost' IDENTIFIED BY '$SCALR_MYSQL_PASSWORD'"
 
@@ -127,17 +135,18 @@ echo "========================"
 echo "    Installing Scalr    "
 echo "========================"
 echo
-SCALR_USER=www-data
+SCALR_USER=$APACHE_USER
 
 SCALR_REPO=https://github.com/Scalr/scalr.git
 SCALR_INSTALL=/var/scalr
 SCALR_APP=$SCALR_INSTALL/app
 SCALR_SQL=$SCALR_INSTALL/sql
-apt-get install -y git
+os_install git
 git clone $SCALR_REPO $SCALR_INSTALL
 
+pre_python_setup
 # We have to be in the correct folder to install.
-curr_dir=`pwd`
+curr_dir=$(pwd)
 cd $SCALR_APP/python
 python setup.py install
 cd $curr_dir
@@ -146,6 +155,8 @@ cd $curr_dir
 SCALR_CACHE=$SCALR_APP/cache
 mkdir $SCALR_CACHE
 chown $SCALR_USER:$SCALR_USER $SCALR_CACHE
+
+post_scalr_app_setup
 
 # Configure database
 echo
@@ -262,25 +273,25 @@ scalr:
     pid_file: "$POLLER_PID"
 EOF
 
+
+echo
+echo "==============================="
+echo "    Configuring logging level  "
+echo "==============================="
+echo
+# Configure logging level
+SCALR_LOGGING_LEVEL=WARN
+sed -ie '/^<root/,/^<.root/ s/level value="[^"]*"/level value="'$SCALR_LOGGING_LEVEL'"/' /var/scalr/app/etc/log4php.xml
+
+
 # Install Rrdcached
 echo
 echo "==========================="
 echo "    Configuring rrdcached  "
 echo "==========================="
 echo
-# Workaround for https://bugs.launchpad.net/ubuntu/+source/rrdtool/+bug/985341
-if [ "$DISTRIB_RELEASE" '=' "12.04" ]; then
-    mkdir -p /var/lib/rrdcached/db /var/lib/rrdcached/journal
-    chown $(printf %q "$USER"):$(printf %q "$(groups | awk '{print $1}')") /var/lib/rrdcached/db /var/lib/rrdcached/journal
-fi
-apt-get install -y rrdcached
 
-cat >> /etc/default/rrdcached << EOF
-OPTS="-s $SCALR_USER"
-OPTS="\$OPTS -l unix:/var/run/rrdcached.sock"
-OPTS="\$OPTS -j /var/lib/rrdcached/journal/ -F"
-OPTS="\$OPTS -b /var/lib/rrdcached/db/ -B"
-EOF
+configure_rrdcached
 
 mkdir $SCALR_APP/www/graphics/
 chown $SCALR_USER $SCALR_APP/www/graphics/
@@ -297,7 +308,7 @@ echo "==========================="
 echo
 
 SCALR_SITE_NAME=scalr
-SCALR_SITE_PATH=/etc/apache2/sites-available/$SCALR_SITE_NAME
+set_apache_vars
 
 cat > $SCALR_SITE_PATH << EOF
 <VirtualHost *:80>
@@ -310,7 +321,7 @@ Options -Indexes +FollowSymLinks +MultiViews
 AllowOverride All
 Order allow,deny
 allow from all
-Require all granted
+$SCALR_APACHE_GRANT
 </Directory>
 
 ErrorLog $SCALR_LOG_DIR/scalr-error.log
@@ -319,16 +330,7 @@ LogLevel warn
 </VirtualHost>
 EOF
 
-a2enmod rewrite
-
-# Disable all Apache default sites, however they're called
-a2dissite default || true
-a2dissite 000-default || true
-
-# Try adding our site, whichever configuration works
-a2ensite $SCALR_SITE_NAME || mv $SCALR_SITE_PATH $SCALR_SITE_PATH.conf && a2ensite $SCALR_SITE_NAME
-
-service apache2 restart
+configure_start_apache
 
 # Install crontab
 echo
@@ -365,6 +367,8 @@ echo "===================================="
 echo "    Configuring Daemon Services     "
 echo "===================================="
 echo
+
+pre_init_setup
 
 INIT_DIR=/etc/init
 
@@ -403,31 +407,28 @@ EOF
 # We can't use setuid / setgid: we need pre-start to run as root.
 }
 
-PYTHON=`command -v python`
+PYTHON=$(command -v python)
 
 prepare_init "$POLLER_NAME" "Scalr Stats Poller Daemon" "$POLLER_PID" "$PYTHON" "-m scalrpy.stats_poller -c $SCALR_CONFIG_FILE --start --interval 120"
 prepare_init "$MESSAGING_NAME" "Scalr Messaging Daemon" "$MESSAGING_PID" "$PYTHON" "-m scalrpy.messaging -c $SCALR_CONFIG_FILE --start"
 
-service $POLLER_NAME start
-service $MESSAGING_NAME start
+initctl start $POLLER_NAME
+initctl start $MESSAGING_NAME
 
 echo
 echo "==========================="
 echo "    Configuring System     "
 echo "==========================="
 echo
-
-echo "kernel.msgmnb = 524288" > /etc/sysctl.d/60-scalr.conf
-
-service procps start
+configure_system
 
 echo
 echo "==========================="
 echo "    Configuring Users     "
 echo "==========================="
 echo
-apt-get install -y hashalot
-HASHED_PASSWORD=`echo $SCALR_ADMIN_PASSWORD | sha256 -x`
+
+HASHED_PASSWORD=$(echo -n $SCALR_ADMIN_PASSWORD | sha256sum | awk '{print $1}')
 mysql --defaults-extra-file=$MYSQL_CLIENT_FILE --database=$SCALR_MYSQL_DB \
   --execute="UPDATE account_users SET password='$HASHED_PASSWORD' WHERE id=1"
 
@@ -484,7 +485,7 @@ echo "Quickstart Roles"
 echo "----------------"
 echo "Scalr provides, free of charge, up-to-date role images for AWS"
 echo "Those will help you get started with Scalr. To get access:"
-echo "    1. Copy the contents of $SCALR_ID_FILE: `cat $SCALR_ID_FILE`"
+echo "    1. Copy the contents of $SCALR_ID_FILE: $(cat $SCALR_ID_FILE)"
 echo "    2. Submit them to this form: http://goo.gl/qD4mpa"
 echo "    3. Run: \$ php $SCALR_APP/tools/sync_shared_roles.php"
 

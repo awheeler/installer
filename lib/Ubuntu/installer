@@ -114,7 +114,7 @@ configure_rrdcached() {
   fi
   apt-get install -y rrdcached
   cat >> /etc/default/rrdcached << EOF
-  OPTS="-s $SCALR_USER"
+  OPTS="-s $WEB_USER"
   OPTS="\$OPTS -l unix:/var/run/rrdcached.sock"
   OPTS="\$OPTS -j /var/lib/rrdcached/journal/ -F"
   OPTS="\$OPTS -b /var/lib/rrdcached/db/ -B"

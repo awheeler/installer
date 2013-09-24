@@ -53,11 +53,9 @@ else
   source lib/Ubuntu/*
 fi
 
-# Import our common libraries
-source lib/trap
-
 # Run any pre-install commands
 prepare_system
+
 
 # Add latest PHP repo
 echo
@@ -135,7 +133,16 @@ echo "========================"
 echo "    Installing Scalr    "
 echo "========================"
 echo
-SCALR_USER=$APACHE_USER
+SERVICE_USER=root  # Already exists
+WEB_USER=$APACHE_USER
+useradd --system $WEB_USER || true  # It should already exist
+SCALR_GROUP=scalr  # Needs creation
+groupadd --force $SCALR_GROUP  # We don't want this to exist already
+
+for user in $SERVICE_USER $WEB_USER
+do
+  usermod --append --groups $SCALR_GROUP $user
+done
 
 SCALR_REPO=https://github.com/Scalr/scalr.git
 SCALR_INSTALL=/var/scalr
@@ -153,8 +160,8 @@ cd $curr_dir
 
 # We have to create the cache folder
 SCALR_CACHE=$SCALR_APP/cache
-mkdir $SCALR_CACHE
-chown $SCALR_USER:$SCALR_USER $SCALR_CACHE
+mkdir --mode=770 $SCALR_CACHE
+chown $SERVICE_USER:$SCALR_GROUP $SCALR_CACHE
 
 post_scalr_app_setup
 
@@ -180,9 +187,12 @@ SCALR_ID_FILE=$SCALR_APP/etc/id
 SCALR_CONFIG_FILE=$SCALR_APP/etc/config.yml
 
 # Required folders and files
-mkdir -p $SCALR_LOG_DIR $SCALR_PID_DIR
+mkdir --mode=775 --parents $SCALR_LOG_DIR $SCALR_PID_DIR
+chown $SERVICE_USER:$SCALR_GROUP $SCALR_LOG_DIR $SCALR_PID_DIR
+
 touch $SCALR_ID_FILE
-chown $SCALR_USER:$SCALR_USER $SCALR_LOG_DIR $SCALR_PID_DIR $SCALR_ID_FILE
+chown $SERVICE_USER:$SCALR_GROUP $SCALR_ID_FILE
+chmod 664 $SCALR_ID_FILE
 
 # Process "names" for Python scripts (useful later for start-stop-daemon matching)
 POLLER_NAME=poller
@@ -193,6 +203,7 @@ MESSAGING_NAME=messaging
 MESSAGING_LOG=$SCALR_LOG_DIR/$MESSAGING_NAME.log
 MESSAGING_PID=$SCALR_PID_DIR/$MESSAGING_NAME.pid
 
+# TODO: Here again, race condition
 cat > $SCALR_CONFIG_FILE << EOF
 scalr:
   connections:
@@ -272,7 +283,8 @@ scalr:
     log_file: "$POLLER_LOG"
     pid_file: "$POLLER_PID"
 EOF
-
+chown $SERVICE_USER:$SCALR_GROUP $SCALR_CONFIG_FILE
+chmod 660 $SCALR_CONFIG_FILE
 
 echo
 echo "==============================="
@@ -293,10 +305,11 @@ echo
 
 configure_rrdcached
 
-mkdir $SCALR_APP/www/graphics/
-chown $SCALR_USER $SCALR_APP/www/graphics/
-mkdir /var/lib/rrdcached/db/{x1x6,x2x7,x3x8,x4x9,x5x0}
-chown $SCALR_USER /var/lib/rrdcached/db/{x1x6,x2x7,x3x8,x4x9,x5x0}
+mkdir --mode=775 $SCALR_APP/www/graphics/
+chown $SERVICE_USER:$SCALR_GROUP $SCALR_APP/www/graphics/
+
+mkdir --mode=775 /var/lib/rrdcached/db/{x1x6,x2x7,x3x8,x4x9,x5x0}
+chown $SERVICE_USER:$SCALR_GROUP /var/lib/rrdcached/db/{x1x6,x2x7,x3x8,x4x9,x5x0}
 
 service rrdcached restart
 
@@ -339,7 +352,7 @@ echo "    Configuring Cronjobs     "
 echo "============================="
 echo
 CRON_FILE=/tmp/$$-scalr-cron  #TODO: Fix insecure race condition on creation here
-crontab -u $SCALR_USER -l > $CRON_FILE.bak || true  # Back up, ignore errors
+crontab -u $SERVICE_USER -l > $CRON_FILE.bak || true  # Back up, ignore errors
 
 cat > $CRON_FILE << EOF
 * * * * * /usr/bin/php -q $SCALR_APP/cron/cron.php --Scheduler
@@ -359,7 +372,7 @@ cat > $CRON_FILE << EOF
 */5 * * * * /usr/bin/php -q $SCALR_APP/cron-ng/cron.php --DbMsrMaintenance
 EOF
 
-crontab -u $SCALR_USER $CRON_FILE
+crontab -u $SERVICE_USER $CRON_FILE
 rm $CRON_FILE
 
 echo
@@ -398,11 +411,11 @@ pre-start script
     logger -is -t "\$UPSTART_JOB" "ERROR: Config file is not readable"
     exit 1
   fi
-  mkdir -p $SCALR_PID_DIR
-  chown $SCALR_USER:$SCALR_USER $SCALR_PID_DIR
+  mkdir --mode=775 --parents $SCALR_PID_DIR
+  chown $SERVICE_USER:$SCALR_GROUP $SCALR_PID_DIR
 end script
 
-exec start-stop-daemon --start --chuid $SCALR_USER --pidfile $daemon_pidfile --exec $daemon_proc -- $daemon_args
+exec start-stop-daemon --start --chuid $SERVICE_USER:$SCALR_GROUP --pidfile $daemon_pidfile --exec $daemon_proc -- $daemon_args
 EOF
 # We can't use setuid / setgid: we need pre-start to run as root.
 }
@@ -437,14 +450,20 @@ echo "==========================="
 echo "    Validating Install     "
 echo "==========================="
 echo
-# We need to let the testenvironment command create the key
+
 CRYPTOKEY_PATH=$SCALR_APP/etc/.cryptokey
-touch $CRYPTOKEY_PATH
-chown $SCALR_USER:$SCALR_USER $CRYPTOKEY_PATH
+touch $CRYPTOKEY_PATH  # TODO: Race condition
+chown $SERVICE_USER:$SCALR_GROUP $CRYPTOKEY_PATH
+chmod 660 $CRYPTOKEY_PATH
+
 set +o nounset
-trap_append "chown root:root $CRYPTOKEY_PATH" SIGINT SIGTERM EXIT  # Restore ownership of the cryptokey
+trap_append "chmod 440 $CRYPTOKEY_PATH" SIGINT SIGTERM EXIT  # Restore ownership of the cryptokey
 set -o nounset
-sudo -u $SCALR_USER php $SCALR_APP/www/testenvironment.php || true # We don't want to exit on an error
+
+for user in $SERVICE_USER $WEB_USER
+do
+  sudo -u $user php $SCALR_APP/www/testenvironment.php || true # We don't want to exit on an error
+done
 
 
 echo
@@ -453,8 +472,9 @@ echo "    Done Installing Scalr     "
 echo "=============================="
 echo
 
-echo "Scalr was installed to:      $SCALR_INSTALL"
-echo "Scalr is running under user: $SCALR_USER"
+echo "Scalr is installed to:                 $SCALR_INSTALL"
+echo "Scalr web is running under user:       $WEB_USER"
+echo "Scalr services are running under user: $SERVICE_USER"
 echo
 echo "==================================="
 echo "    Auto-generated credentials     "

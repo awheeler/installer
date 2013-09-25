@@ -53,6 +53,9 @@ else
   source lib/Ubuntu/*
 fi
 
+# Import our common libraries
+source lib/trap
+
 # Run any pre-install commands
 prepare_system
 

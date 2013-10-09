@@ -30,7 +30,7 @@ prepare_system() {
    yum install -y http://dag.wieers.com/redhat/el6/en/x86_64/dag/RPMS/rpmforge-release-0.5.3-1.el6.rf.x86_64.rpm
   fi
 
-  yum install -y httpd
+  yum install -y httpd policycoreutils-python
   #FIXME There's a bug in handling the dateAdded value in MySQL somewhere in the scalr code, so use UTC
   ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 }

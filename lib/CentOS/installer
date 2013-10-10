@@ -30,7 +30,12 @@ prepare_system() {
    yum install -y http://dag.wieers.com/redhat/el6/en/x86_64/dag/RPMS/rpmforge-release-0.5.3-1.el6.rf.x86_64.rpm
   fi
 
-  yum install -y httpd policycoreutils-python
+  use_selinux=0
+  if [ -d /selinux ]; then
+    use_selinux=1
+    yum install -y policycoreutils-python 
+  fi
+  yum install -y httpd wget
   #FIXME There's a bug in handling the dateAdded value in MySQL somewhere in the scalr code, so use UTC
   ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 }
@@ -135,11 +140,13 @@ configure_start_apache() {
 
 }
 post_scalr_app_setup() {
-  # Setup the selinux policies
-  semanage fcontext -a -t httpd_sys_content_t  "$SCALR_APP(/.*)?"
-  semanage fcontext -a -t httpd_sys_rw_content_t  "$SCALR_CACHE(/.*)?"
-  restorecon -R $SCALR_APP/
-  setsebool httpd_can_network_connect on
+  if [ "$use_selinux" -eq 1 ]; then
+    # Setup the selinux policies
+    semanage fcontext -a -t httpd_sys_content_t  "$SCALR_APP(/.*)?"
+    semanage fcontext -a -t httpd_sys_rw_content_t  "$SCALR_CACHE(/.*)?"
+    restorecon -R $SCALR_APP/
+    setsebool httpd_can_network_connect on
+  fi
 }
 
 pre_init_setup() {

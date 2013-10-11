@@ -145,7 +145,7 @@ post_scalr_app_setup() {
     semanage fcontext -a -t httpd_sys_content_t  "$SCALR_APP(/.*)?"
     semanage fcontext -a -t httpd_sys_rw_content_t  "$SCALR_CACHE(/.*)?"
     restorecon -R $SCALR_APP/
-    setsebool httpd_can_network_connect on
+    setsebool -P httpd_can_network_connect on
   fi
 }
 

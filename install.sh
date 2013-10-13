@@ -21,7 +21,7 @@ if [ -f /etc/redhat-release ]; then
   DISTRIB_ID=${RH_RELEASE%% *}
   DISTRIB_RELEASE=${RH_RELEASE#*release }
   DISTRIB_RELEASE=${DISTRIB_RELEASE% *}
-  if [ $DISTRIB_ID != "CentOS" -a $DISTRIB_ID != "RedHat" ] || [ "$DISTRIB_RELEASE" '<' "6.4" ]; then
+  if [ $DISTRIB_ID != "CentOS" -a $DISTRIB_ID != "Red" ] || [ "$DISTRIB_RELEASE" '<' "6.4" ]; then
     wrong_version
   fi
   # Import our CentOS/RedHat libraries

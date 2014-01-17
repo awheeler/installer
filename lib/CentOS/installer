@@ -102,7 +102,7 @@ post_mysql_install() {
 }
 
 pre_python_setup() {
-  yum install -y python-psutil rrdtool-python python-setuputools python-devel --enablerepo=rpmforge-extras
+  yum install -y python-psutil rrdtool-python python-setuptools python-devel --enablerepo=rpmforge-extras
 }
 
 configure_rrdcached() {

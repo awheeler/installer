@@ -53,6 +53,46 @@ else
   source lib/Ubuntu/*
 fi
 
+
+function valid_ip() {
+    local  ip=$1
+    local  stat=1
+
+    if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+        OIFS=$IFS
+        IFS='.'
+        ip=($ip)
+        IFS=$OIFS
+        [[ ${ip[0]} -le 255 && ${ip[1]} -le 255 \
+            && ${ip[2]} -le 255 && ${ip[3]} -le 255 ]]
+        stat=$?
+    fi
+    return $stat
+}
+
+# Prompt for the server's IP
+HOST_IP=${HOST_IP-}
+if [ -z "$HOST_IP" ] || ! valid_ip "$HOST_IP" ; then
+
+  echo "Enter an IP for this host that will be accessible from Cloud instances (e.g. this instance's Public IP)"
+  echo "Note: You will be able to change this value later"
+
+  invalid_ip=true
+  has_errored=false
+
+  while $invalid_ip;
+  do
+    if $has_errored ; then
+      echo "Error: '$HOST_IP' is not a valid IP"
+      echo "Hint: if you're unsure, enter 127.0.0.1 and change it later in the configuration file!"
+    fi
+    read -p "Host IP> " -e HOST_IP
+    has_errored=true
+    if valid_ip $HOST_IP; then invalid_ip=false; fi
+  done
+
+fi
+
 # Import our common libraries
 source lib/trap
 
@@ -422,10 +462,10 @@ prepare_init "$DB_QUEUE_NAME" "Scalr DB Queue Event Daeon" "$DB_QUEUE_PID" "$PYT
 prepare_init "$PLOTTER_NAME" "Scalr Load Stats Plotter" "$PLOTTER_PID" "$PYTHON" "-m scalrpy.load_statistics -p $PLOTTER_PID -l $PLOTTER_LOG -c $SCALR_CONFIG_FILE --plotter -vvv --start"
 prepare_init "$POLLER_NAME" "Scalr Load Stats Poller" "$POLLER_NAME" "$PYTHON" "-m scalrpy.load_statistics -p $POLLER_PID -l $POLLER_LOG -c $SCALR_CONFIG_FILE --poller -vvv --start"
 
-service $MSG_SENDER_NAME start
-service $DB_QUEUE_NAME start
-service $PLOTTER_NAME start
-service $POLLER_NAME start
+initctl start $MSG_SENDER_NAME
+initctl start $DB_QUEUE_NAME
+initctl start $PLOTTER_NAME
+initctl start $POLLER_NAME
 
 echo
 echo "==========================="
@@ -497,7 +537,7 @@ echo
 echo "Configuration"
 echo "-------------"
 echo "    Some optional modules have not been installed: DNS, LDAP"
-echo "    You should configure security settings in $SCALR_APP/etc/config.yml"
+echo "    If $HOST_IP is not a valid Public IP for this instance, you must edit your settings in $SCALR_APP/etc/config.yml"
 echo
 
 echo "Quickstart Roles"
@@ -507,5 +547,10 @@ echo "Those will help you get started with Scalr. To get access:"
 echo "    1. Copy the contents of $SCALR_ID_FILE: $(cat $SCALR_ID_FILE)"
 echo "    2. Submit them to this form: http://goo.gl/qD4mpa"
 echo "    3. Run: \$ php $SCALR_APP/tools/sync_shared_roles.php"
+
+echo "Creating Users"
+echo "--------------"
+echo "Once logged in as an admin, you will need to create a new user profile to use Scalr"
+
 
 echo

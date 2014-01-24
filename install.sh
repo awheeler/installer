@@ -197,15 +197,6 @@ touch $SCALR_ID_FILE
 chown $SERVICE_USER:$SCALR_GROUP $SCALR_ID_FILE
 chmod 664 $SCALR_ID_FILE
 
-# Process "names" for Python scripts (useful later for start-stop-daemon matching)
-POLLER_NAME=poller
-POLLER_LOG=$SCALR_LOG_DIR/$POLLER_NAME.log
-POLLER_PID=$SCALR_PID_DIR/$POLLER_NAME.pid
-
-MESSAGING_NAME=messaging
-MESSAGING_LOG=$SCALR_LOG_DIR/$MESSAGING_NAME.log
-MESSAGING_PID=$SCALR_PID_DIR/$MESSAGING_NAME.pid
-
 # TODO: Here again, race condition
 cat > $SCALR_CONFIG_FILE << EOF
 scalr:
@@ -219,9 +210,12 @@ scalr:
   ui:
     support_url: 'https://groups.google.com/d/forum/scalr-discuss'
     wiki_url: 'http://wiki.scalr.com'
+  email:
+    address: "scalr@scalr.mydomain.com"
+    name: "Scalr Service"
   pma_instance_ip_address: '127.0.0.1'
   auth_mode: scalr
-  instances_connection_policy: public
+  instances_connection_policy: auto
   allowed_clouds:
    - ec2
    - openstack
@@ -234,10 +228,10 @@ scalr:
    - rackspacengus
   endpoint:
     scheme: http
-    host: 'endpoint url here'
+    host: '$HOST_IP'
   aws:
     security_group_name: 'scalr.ip-pool'
-    ip_pool: ['8.8.8.8/32']
+    ip_pool: ['$HOST_IP/32']
     security_group_prefix: 'scalr.'
   billing:
     enabled: no
@@ -259,33 +253,15 @@ scalr:
       enabled: no
       nameservers: ['ns1.example.net', 'ns2.example.net', 'ns3.example.net', 'ns4.example.net']
       default_domain_name: 'provide.domain.here.in'
-  msg_sender:
+  load_statistics:
     connections:
-      mysql:
-        <<: *connections_mysql
-        driver: 'mysql+pymysql'
-        pool_recycle: 120
-        pool_size: 10
-    pool_size: 50
-    log_file: "$MESSAGING_LOG"
-    pid_file: "$MESSAGING_PID"
-  stats_poller:
-    connections:
-      mysql:
-        <<: *connections_mysql
-        driver: 'mysql+pymysql'
-        pool_recycle: 120
-        pool_size: 4
-    metrics: ['cpu', 'la', 'mem', 'net']
-    farm_procs: 2
-    serv_thrds: 100
-    rrd_thrds: 2
-    rrd_db_dir: '/var/lib/rrdcached/db'
-    images_path: '$SCALR_APP/www/graphics'
-    graphics_url: '/graphics'
-    log_file: "$POLLER_LOG"
-    pid_file: "$POLLER_PID"
+      plotter:
+        host: 'http://$HOST_IP'
+    rrd_dir: '/var/lib/rrdcached/db'
+    img_dir: '$SCALR_APP/www/graphics'
+    img_url: '/graphics'
 EOF
+
 chown $SERVICE_USER:$SCALR_GROUP $SCALR_CONFIG_FILE
 chmod 660 $SCALR_CONFIG_FILE
 
@@ -361,18 +337,17 @@ cat > $CRON_FILE << EOF
 * * * * * /usr/bin/php -q $SCALR_APP/cron/cron.php --Scheduler
 */5 * * * * /usr/bin/php -q $SCALR_APP/cron/cron.php --UsageStatsPoller
 */2 * * * * /usr/bin/php -q $SCALR_APP/cron-ng/cron.php --Scaling
-* * * * * /usr/bin/php -q $SCALR_APP/cron/cron.php --DBQueueEvent
 */2 * * * * /usr/bin/php -q $SCALR_APP/cron/cron.php --SzrMessaging
 */2 * * * * /usr/bin/php -q $SCALR_APP/cron/cron.php --BundleTasksManager
-*/2 * * * * /usr/bin/php -q $SCALR_APP/cron-ng/cron.php --DeployManager
 */15 * * * * /usr/bin/php -q $SCALR_APP/cron-ng/cron.php --MetricCheck
 */2 * * * * /usr/bin/php -q $SCALR_APP/cron-ng/cron.php --Poller
-*/10 * * * * /usr/bin/php -q $SCALR_APP/cron/cron.php --MySQLMaintenance
 * * * * * /usr/bin/php -q $SCALR_APP/cron/cron.php --DNSManagerPoll
 17 5 * * * /usr/bin/php -q $SCALR_APP/cron/cron.php --RotateLogs
 */2 * * * * /usr/bin/php -q $SCALR_APP/cron/cron.php --EBSManager
 */20 * * * * /usr/bin/php -q $SCALR_APP/cron/cron.php --RolesQueue
 */5 * * * * /usr/bin/php -q $SCALR_APP/cron-ng/cron.php --DbMsrMaintenance
+*/20 * * * * /usr/bin/php -q $SCALR_APP/cron-ng/cron.php --LeaseManager
+*/1 * * * * /usr/bin/php -q $SCALR_APP/cron-ng/cron.php --ServerTerminate
 EOF
 
 crontab -u $SERVICE_USER $CRON_FILE
@@ -425,11 +400,32 @@ EOF
 
 PYTHON=$(command -v python)
 
-prepare_init "$POLLER_NAME" "Scalr Stats Poller Daemon" "$POLLER_PID" "$PYTHON" "-m scalrpy.stats_poller -c $SCALR_CONFIG_FILE --start --interval 120"
-prepare_init "$MESSAGING_NAME" "Scalr Messaging Daemon" "$MESSAGING_PID" "$PYTHON" "-m scalrpy.messaging -c $SCALR_CONFIG_FILE --start"
+# Process "names" for Python scripts (useful later for start-stop-daemon matching)
+MSG_SENDER_NAME=msgsender
+MSG_SENDER_LOG=$SCALR_LOG_DIR/$MSG_SENDER_NAME.log
+MSG_SENDER_PID=$SCALR_PID_DIR/$MSG_SENDER_NAME.pid
 
-initctl start $POLLER_NAME
-initctl start $MESSAGING_NAME
+DB_QUEUE_NAME=dbqueue
+DB_QUEUE_LOG=$SCALR_LOG_DIR/$DB_QUEUE_NAME.log
+DB_QUEUE_PID=$SCALR_PID_DIR/$DB_QUEUE_NAME.pid
+
+PLOTTER_NAME=plotter
+PLOTTER_LOG=$SCALR_LOG_DIR/$PLOTTER_NAME.log
+PLOTTER_PID=$SCALR_PID_DIR/$PLOTTER_NAME.pid
+
+POLLER_NAME=poller
+POLLER_LOG=$SCALR_LOG_DIR/$POLLER_NAME.log
+POLLER_PID=$SCALR_PID_DIR/$POLLER_NAME.pid
+
+prepare_init "$MSG_SENDER_NAME" "Scalr Messaging Daemon" "$MSG_SENDER_PID" "$PYTHON" "-m scalrpy.msg_sender -p $MSG_SENDER_PID -l $MSG_SENDER_LOG -c $SCALR_CONFIG_FILE -vvv --start"
+prepare_init "$DB_QUEUE_NAME" "Scalr DB Queue Event Daeon" "$DB_QUEUE_PID" "$PYTHON" "-m scalrpy.dbqueue_event -p $DB_QUEUE_PID -l $DB_QUEUE_LOG -c $SCALR_CONFIG_FILE -vvv --start"
+prepare_init "$PLOTTER_NAME" "Scalr Load Stats Plotter" "$PLOTTER_PID" "$PYTHON" "-m scalrpy.load_statistics -p $PLOTTER_PID -l $PLOTTER_LOG -c $SCALR_CONFIG_FILE --plotter -vvv --start"
+prepare_init "$POLLER_NAME" "Scalr Load Stats Poller" "$POLLER_NAME" "$PYTHON" "-m scalrpy.load_statistics -p $POLLER_PID -l $POLLER_LOG -c $SCALR_CONFIG_FILE --poller -vvv --start"
+
+service $MSG_SENDER_NAME start
+service $DB_QUEUE_NAME start
+service $PLOTTER_NAME start
+service $POLLER_NAME start
 
 echo
 echo "==========================="

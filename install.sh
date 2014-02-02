@@ -300,6 +300,16 @@ scalr:
     rrd_dir: '/var/lib/rrdcached/db'
     img_dir: '$SCALR_APP/www/graphics'
     img_url: '/graphics'
+#    # list of metrics for processing
+    metrics: ['cpu', 'la', 'mem', 'net', 'io', 'snum'] 
+#    # use snmp if scalarizr api failed
+    with_snmp: false
+#    # size of worker pool for poller
+    pool_size: 100
+#    # polling interval in seconds
+    interval: 120
+    log_file: '/var/log/scalr.load-statistics.log'
+    pid_file: '/var/run/scalr.load-statistics.pid'
 EOF
 
 chown $SERVICE_USER:$SCALR_GROUP $SCALR_CONFIG_FILE
